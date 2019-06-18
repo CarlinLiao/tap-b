@@ -27,7 +27,8 @@ void AlgorithmB(network_type *network, algorithmBParameters_type *parameters) {
     /* Initialize */
     clock_t stopTime = clock(); /* used for timing */
     initializeBushesB(network, bushes, parameters);
-
+    displayMessage(LOW_NOTIFICATIONS, "Initialization done in time %.3f s.",
+            ((double)(clock() - stopTime)) / CLOCKS_PER_SEC);
     /* Iterate */
     do {
         iteration++;
@@ -36,12 +37,17 @@ void AlgorithmB(network_type *network, algorithmBParameters_type *parameters) {
         for (origin = 0; origin < network->numZones; origin++) {
             updateBushB(origin, network, bushes, parameters);
             updateFlowsB(origin, network, bushes, parameters);
+            if (origin % 100 == 0)
+                printf("\rDone updating bush %d", origin);
         }
 
         /* Shift flows */
         for (i = 0; i < parameters->innerIterations; i++) {
             for (origin = 0; origin < network->numZones; origin++) {
                 updateFlowsB(origin, network, bushes, parameters);
+                if (origin % 100 == 0)
+                    printf("\rFinished pass %d of updating bush %d",
+                            i, origin);
             }
         }
 
@@ -143,6 +149,7 @@ void genericTopologicalOrder(int origin, network_type *network,
     int i, j, m,  next, highestMerge = 0;
     
     declareVector(int, indegree, network->numNodes);
+
     for (i = 0; i < network->numNodes; i++) {
         indegree[i] = 1; /* By default non-origin nodes are assumed to have 1
                             incoming link; merges and origin handled below */
@@ -176,8 +183,9 @@ void genericTopologicalOrder(int origin, network_type *network,
             }
         }
     }
-    if (next < network->numNodes)
+    if (next < network->numNodes) {
         fatalError("Graph given to bushTopologicalOrder contains a cycle.");
+    }
     bushes->lastMerge[origin] = highestMerge;
 
     deleteQueue(&LIST);
@@ -342,6 +350,8 @@ void initializeBushesB(network_type *network, bushes_type *bushes,
             network->arcs[ij].cost =
                 network->arcs[ij].calculateCost(&network->arcs[ij]);
         }
+        if (i % 100 == 0)
+            printf("\rCreated bush %d", i);
     }
 
     for (ij = 0; ij < network->numArcs; ij++) {
@@ -357,7 +367,7 @@ void initializeBushesB(network_type *network, bushes_type *bushes,
  * will be calculated regardless of whether there is flow on them.
 */
 void scanBushes(int origin, network_type *network, bushes_type *bushes,
-                algorithmBParameters_type *parameters, bool longestUsed) {
+                algorithmBParameters_type *parameters, scan_type LPrule) {
     int h, i, hi, m, curnode, curarc;
     double tempcost;
     merge_type *merge;
@@ -378,6 +388,7 @@ void scanBushes(int origin, network_type *network, bushes_type *bushes,
         if (isMergeNode(origin, i, bushes) == TRUE) {
             m = pred2merge(bushes->pred[origin][i]);
             merge = bushes->merges[origin][m];
+            /* Find shortest incoming link */
             for (curarc = 0; curarc < merge->numApproaches; curarc++) {
                 hi = merge->approach[curarc];
                 h = network->arcs[hi].tail;
@@ -386,11 +397,20 @@ void scanBushes(int origin, network_type *network, bushes_type *bushes,
                     bushes->SPcost[i] = tempcost;
                     merge->SPlink = curarc;
                 }
+            }
+            /* Find longest (need to separate out depending on LPrule) */
+            for (curarc = 0; curarc < merge->numApproaches; curarc++) {
+                hi = merge->approach[curarc];
+                h = network->arcs[hi].tail;
                 tempcost = bushes->LPcost[h] + network->arcs[hi].cost;      
                 if (tempcost > bushes->LPcost[i]
-                     && (longestUsed == FALSE ||
-                         merge->approachFlow[curarc] > parameters->minLinkFlow)
-                   ) {
+                  && (LPrule == LONGEST_BUSH_PATH
+                    || (LPrule == LONGEST_USED_PATH
+                      && merge->approachFlow[curarc] > parameters->minLinkFlow)
+                    || (LPrule == LONGEST_USED_OR_SP
+                      &&(merge->approachFlow[curarc] > parameters->minLinkFlow
+                      || merge->SPlink == curarc)))) {
+                    
                     bushes->LPcost[i] = tempcost;
                     merge->LPlink = curarc;
                 }
@@ -421,14 +441,19 @@ void updateBushB(int origin, network_type *network, bushes_type *bushes,
    
     /* First update labels... ignoring longest unused paths since those will be
      * removed in the next step. */
-    scanBushes(origin, network, bushes, parameters, TRUE);
+    scanBushes(origin, network, bushes, parameters, LONGEST_USED_OR_SP);
     calculateBushFlows(origin, network, bushes);
-   
+  
     /* Make a first pass... */
     for (ij = 0; ij < network->numArcs; ij++) {
         /* Mark links with near-zero contribution for removal by setting to
          * exactly zero */
-        if (bushes->flow[ij] < parameters->minLinkFlow) bushes->flow[ij] = 0;
+        if (bushes->flow[ij] < parameters->minLinkFlow) {
+            if (isInBush(origin, ij, network, bushes) == TRUE)
+                displayMessage(FULL_DEBUG, "Attempting to delete (%d,%d)\n", 
+                           network->arcs[ij].tail+1, network->arcs[ij].head+1);
+            bushes->flow[ij] = 0;
+        }
         if (bushes->flow[ij] > 0) continue; /* Link is already in the bush, no
                                                need to add it again */
         /* See if the link provides a shortcut using the strict criterion */
@@ -446,7 +471,8 @@ void updateBushB(int origin, network_type *network, bushes_type *bushes,
         /* Never delete shortest path tree... should be OK with floating point
          * comparison since this is how SPcost is calculated */
         } else if (bushes->SPcost[i]+network->arcs[ij].cost==bushes->SPcost[j] 
-                   && bushes->flow[ij] == 0) {
+                   && bushes->flow[ij] == 0
+                   && isInBush(origin, ij, network, bushes) == TRUE) {
             bushes->flow[ij] = NEW_LINK;
         }
     }
@@ -657,7 +683,7 @@ bool rescanAndCheck(int origin, network_type *network, bushes_type *bushes,
     int i;
     double maxgap = 0;
 
-    scanBushes(origin, network, bushes, parameters, TRUE);
+    scanBushes(origin, network, bushes, parameters, LONGEST_USED_PATH);
     findDivergenceNodes(origin, network, bushes);
     for (i = 0; i < network->numNodes; i++) {
         maxgap = max(maxgap, fabs(bushes->LPcost[i] -bushes->SPcost[i]));
@@ -1042,10 +1068,10 @@ mergeDLLelt *insertMergeDLL(mergeDLL *list, merge_type *merge, int i,
     if (after != NULL) {
         newNode->prev = after;
         newNode->next = after->next;
-    if (list->tail != after)
-        newNode->next->prev = newNode;
-    else
-        list->tail = newNode;
+        if (list->tail != after)
+            newNode->next->prev = newNode;
+        else
+            list->tail = newNode;
         after->next = newNode;
     } else {
         newNode->prev = NULL;

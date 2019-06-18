@@ -212,6 +212,11 @@ typedef struct algorithmBParameters_type{
    void     (*linkShiftB)(int, double, network_type *);
 } algorithmBParameters_type;
 
+typedef enum scan_type {
+    LONGEST_BUSH_PATH,
+    LONGEST_USED_PATH,
+    LONGEST_USED_OR_SP
+} scan_type;
 
 /* Master routine and parameters */
 void AlgorithmB(network_type *network, algorithmBParameters_type *parameters);
@@ -240,7 +245,7 @@ void mergeFirstTopologicalOrder(int origin, network_type *network,
                                 bushes_type *bushes,
                                 algorithmBParameters_type *parameters);
 void scanBushes(int origin, network_type *network, bushes_type *bushes,
-                algorithmBParameters_type *parameters, bool longestUsed);
+                algorithmBParameters_type *parameters, scan_type LPrule);
 void reconstructMerges(int origin, network_type *network, bushes_type *bushes);
 void findDivergenceNodes(int origin, network_type *network,
                          bushes_type *bushes);
